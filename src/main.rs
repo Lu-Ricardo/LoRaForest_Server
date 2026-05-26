@@ -1,6 +1,8 @@
 use std::{
+    fs::{self, OpenOptions},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    path::Path,
     sync::Mutex,
     time::Duration,
 };
@@ -9,6 +11,11 @@ use serialport::{DataBits, Parity, StopBits};
 
 static SERIAL_DATA_BUFFER: Mutex<String> = Mutex::new(String::new());
 static STOP_FLAG: Mutex<bool> = Mutex::new(true);
+
+enum WriteType {
+    Log,
+    Data,
+}
 
 #[macro_export]
 macro_rules! log_out {
@@ -22,12 +29,63 @@ macro_rules! log_out {
 }
 
 fn main() {
+    write_file(String::from("Test"), WriteType::Data);
     start_read_serialport();
     loop {
         //确保程序一直运行
         if *STOP_FLAG.lock().unwrap() {
             start_tcp_server();
             *STOP_FLAG.lock().unwrap() = false;
+        }
+    }
+}
+
+fn write_file(data: String, datatype: WriteType) {
+    //位于程序运行目录的 data 目录下
+    let savepath = Path::new("data");
+    let data_path = savepath.join("data.csv");
+    let log_path = savepath.join("log");
+    if !savepath.exists() || savepath.is_file() {
+        match fs::create_dir(savepath) {
+            Ok(_) => log_out!("已创建Data文件夹以存放数据"),
+            Err(e) => {
+                log_out!("文件夹创建失败，{}", e.to_string());
+                return;
+            }
+        };
+    }
+
+    let mut log_file = match OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(file) => {
+            log_out!("创建文件 {:?}", &log_path);
+            file
+        }
+        Err(e) => {
+            log_out!("{:?} 文件创建失败, {}", &log_path, e.to_string());
+            return;
+        }
+    };
+    let mut data_file = match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&data_path)
+    {
+        Ok(file) => {
+            log_out!("创建文件: {:?}", &data_path);
+            file
+        }
+        Err(e) => {
+            log_out!("{:?} 文件创建失败，报错原因: {}", &data_path, e.to_string());
+            return;
+        }
+    };
+
+    match datatype {
+        WriteType::Data => {
+            let _ = data_file.write(data.as_bytes());
+        }
+        WriteType::Log => {
+            let _ = log_file.write(data.as_bytes());
         }
     }
 }
