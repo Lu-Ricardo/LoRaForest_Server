@@ -29,10 +29,9 @@ macro_rules! log_out {
 }
 
 fn main() {
-    write_file(String::from("Test"), WriteType::Data);
     start_read_serialport();
     loop {
-        //确保程序一直运行
+        //如果连接断开了就重启程序，确保程序一直运行
         if *STOP_FLAG.lock().unwrap() {
             start_tcp_server();
             *STOP_FLAG.lock().unwrap() = false;
@@ -56,10 +55,7 @@ fn write_file(data: String, datatype: WriteType) {
     }
 
     let mut log_file = match OpenOptions::new().create(true).append(true).open(&log_path) {
-        Ok(file) => {
-            log_out!("创建文件 {:?}", &log_path);
-            file
-        }
+        Ok(file) => file,
         Err(e) => {
             log_out!("{:?} 文件创建失败, {}", &log_path, e.to_string());
             return;
@@ -70,10 +66,7 @@ fn write_file(data: String, datatype: WriteType) {
         .append(true)
         .open(&data_path)
     {
-        Ok(file) => {
-            log_out!("创建文件: {:?}", &data_path);
-            file
-        }
+        Ok(file) => file,
         Err(e) => {
             log_out!("{:?} 文件创建失败，报错原因: {}", &data_path, e.to_string());
             return;
@@ -127,6 +120,7 @@ fn tcp_receive_handle(stream: TcpStream) {
                 *STOP_FLAG.lock().unwrap() = true;
                 break;
             }
+            write_file(data, WriteType::Data);
         }
     });
 }
