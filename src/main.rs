@@ -29,7 +29,9 @@ macro_rules! log_out {
 }
 
 fn main() {
-    start_read_serialport();
+    let args: Vec<String> = std::env::args().collect();
+    let baud_rate: u32 = args[2].trim().parse().expect("波特率参数错误");
+    start_read_serialport(args[1].to_string(), baud_rate);
     loop {
         //如果连接断开了就重启程序，确保程序一直运行
         if *STOP_FLAG.lock().unwrap() {
@@ -137,8 +139,8 @@ fn get_complete_line(buffer: &[u8], lines: &mut String) -> String {
     }
 }
 
-fn start_read_serialport() {
-    let serial_port = serialport::new("COM7", 115200)
+fn start_read_serialport(port: String, baud_rate: u32) {
+    let serial_port = serialport::new(port, baud_rate)
         .data_bits(DataBits::Eight)
         .stop_bits(StopBits::One)
         .timeout(Duration::from_secs(10))
