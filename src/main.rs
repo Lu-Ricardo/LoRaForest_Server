@@ -39,7 +39,7 @@ fn main() {
     }
 }
 
-fn write_file(data: String, datatype: WriteType) {
+fn write_file(data: &String, datatype: WriteType) {
     //位于程序运行目录的 data 目录下
     let savepath = Path::new("data");
     let data_path = savepath.join("data.csv");
@@ -120,17 +120,17 @@ fn tcp_receive_handle(stream: TcpStream) {
                 *STOP_FLAG.lock().unwrap() = true;
                 break;
             }
-            write_file(data, WriteType::Data);
+            write_file(&data, WriteType::Data);
         }
     });
 }
 
-fn get_complete_line(buffer: &[u8]) -> String {
-    let chunk = String::from_utf8_lossy(buffer);
-    let mut lines = String::new();
-    lines.push_str(&chunk);
-    if let Some(new_line) = lines.find("\n") {
+fn get_complete_line(buffer: &[u8], lines: &mut String) -> String {
+    let temp = String::from_utf8_lossy(buffer);
+    lines.push_str(&temp);
+    if let Some(new_line) = lines.find("\r\n") {
         let complete_line = &lines.drain(..=new_line).collect::<String>();
+        lines.clear();
         complete_line.clone()
     } else {
         String::new()
@@ -138,7 +138,7 @@ fn get_complete_line(buffer: &[u8]) -> String {
 }
 
 fn start_read_serialport() {
-    let serial_port = serialport::new("/dev/ttyUSB0", 115200)
+    let serial_port = serialport::new("COM7", 115200)
         .data_bits(DataBits::Eight)
         .stop_bits(StopBits::One)
         .timeout(Duration::from_secs(10))
@@ -151,12 +151,15 @@ fn start_read_serialport() {
         }
     };
     std::thread::spawn(move || {
-        let mut raw_buffer = [0; 128];
+        let mut raw_buffer = [0; 64];
+        let mut lines = String::new();
         loop {
             if let Ok(size) = &mut sp.read(&mut raw_buffer) {
-                let complete_data = &get_complete_line(&mut raw_buffer[..*size]).to_string();
+                let complete_data =
+                    get_complete_line(&mut raw_buffer[..*size], &mut lines).to_string();
+                write_file(&complete_data, WriteType::Data);
                 (*SERIAL_DATA_BUFFER.lock().unwrap()).clear();
-                (*SERIAL_DATA_BUFFER.lock().unwrap()).push_str(complete_data);
+                (*SERIAL_DATA_BUFFER.lock().unwrap()).push_str(&complete_data);
             }
         }
     });
@@ -164,7 +167,7 @@ fn start_read_serialport() {
 
 fn recive_data(stream: &TcpStream) -> String {
     let mut stream = stream;
-    let mut buffer = [0; 128];
+    let mut buffer = [0; 64];
     let size = stream.read(&mut buffer).unwrap();
     String::from_utf8_lossy(&mut buffer[..size]).to_string()
 }
