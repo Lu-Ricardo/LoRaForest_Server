@@ -1,7 +1,7 @@
 use regex::Regex;
 use serialport::{DataBits, Parity, StopBits};
 use std::{
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     path::Path,
@@ -82,22 +82,35 @@ fn write_file(data: &String, datatype: WriteType) {
         };
     }
 
-    let mut log_file = match OpenOptions::new().create(true).append(true).open(&log_path) {
+    if !data_path.exists() {
+        match File::create(&data_path) {
+            Ok(mut file) => {
+                let _ = file.write(b"Date,Time,Temperature,Rain,Light,Press,Humidity\n");
+            }
+            Err(e) => {
+                log_out!("无法打开Data文件, {}", e.to_string());
+            }
+        }
+    }
+
+    if !log_path.exists() {
+        match File::create(&log_path) {
+            Ok(_) => {}
+            Err(e) => {
+                log_out!("无法打开Log文件, {}", e.to_string());
+            }
+        }
+    }
+
+    let mut log_file = match OpenOptions::new().append(true).open(&log_path) {
         Ok(file) => file,
         Err(e) => {
             log_out!("{:?} 文件创建失败, {}", &log_path, e.to_string());
             return;
         }
     };
-    let mut data_file = match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&data_path)
-    {
-        Ok(mut file) => {
-            let _ = file.write(b"Temperature,Rain,Light,Press,Humidity");
-            file
-        }
+    let mut data_file = match OpenOptions::new().append(true).open(&data_path) {
+        Ok(file) => file,
         Err(e) => {
             log_out!("{:?} 文件创建失败，报错原因: {}", &data_path, e.to_string());
             return;
@@ -135,7 +148,7 @@ fn tcp_send_handle(stream: TcpStream) {
             }
             let mut data = SERIAL_DATA_BUFFER.lock().unwrap();
             if *&data.len() > 0 {
-                send_data(&stream, &data.as_bytes());
+                tcp_send_data(&stream, &data.as_bytes());
                 *&data.clear();
             }
         }
@@ -145,26 +158,24 @@ fn tcp_send_handle(stream: TcpStream) {
 fn tcp_receive_handle(stream: TcpStream) {
     std::thread::spawn(move || {
         loop {
-            let data = recive_data(&stream);
+            let data = tcp_recive_data(&stream);
             //收到断开连接的信号
             if data == "Disconnect" {
                 *STOP_FLAG.lock().unwrap() = true;
                 break;
             }
-            write_file(&data, WriteType::Data);
+            //write_file(&data, WriteType::Data);
         }
     });
 }
 
-fn get_complete_line(buffer: &[u8], lines: &mut String) -> String {
+fn get_complete_line(buffer: &[u8], lines: &mut String) -> bool {
     let temp = String::from_utf8_lossy(buffer);
     lines.push_str(&temp);
-    if let Some(new_line) = lines.find("\r\n") {
-        let complete_line = &lines.drain(..=new_line).collect::<String>();
-        lines.clear();
-        complete_line.clone()
+    if let Some(_) = lines.find(";") {
+        true
     } else {
-        String::new()
+        false
     }
 }
 
@@ -187,25 +198,26 @@ fn start_read_serialport(port: String, baud_rate: u32) {
         let mut data = Data::new();
         loop {
             if let Ok(size) = &mut sp.read(&mut raw_buffer) {
-                let complete_data =
-                    get_complete_line(&mut raw_buffer[..*size], &mut lines).to_string();
-                write_file(&complete_data, WriteType::Data);
-                group_data(&complete_data, &mut data);
-                (*SERIAL_DATA_BUFFER.lock().unwrap()).clear();
-                (*SERIAL_DATA_BUFFER.lock().unwrap()).push_str(&complete_data);
+                if get_complete_line(&mut raw_buffer[..*size], &mut lines) {
+                    //write_file(&lines, WriteType::Data);
+                    group_data(&lines, &mut data);
+                    (*SERIAL_DATA_BUFFER.lock().unwrap()).clear();
+                    (*SERIAL_DATA_BUFFER.lock().unwrap()).push_str(&lines);
+                    lines.clear();
+                }
             }
         }
     });
 }
 
-fn recive_data(stream: &TcpStream) -> String {
+fn tcp_recive_data(stream: &TcpStream) -> String {
     let mut stream = stream;
-    let mut buffer = [0; 64];
+    let mut buffer = [0; 1024];
     let size = stream.read(&mut buffer).unwrap();
     String::from_utf8_lossy(&mut buffer[..size]).to_string()
 }
 
-fn send_data(stream: &TcpStream, data: &[u8]) -> bool {
+fn tcp_send_data(stream: &TcpStream, data: &[u8]) -> bool {
     let mut stream = stream;
     match stream.write(&data) {
         Ok(_) => true,
@@ -220,10 +232,10 @@ fn wait_connect(listener: &TcpListener) -> Result<TcpStream, std::io::Error> {
     log_out!("等待客户端连接");
     for stream in listener.incoming() {
         let stream = stream.unwrap();
-        let mut data = recive_data(&stream);
+        let mut data = tcp_recive_data(&stream);
         if data == "It's from LoRaForest Client!" {
-            send_data(&stream, b"It's from LoRaForest Server!");
-            data = recive_data(&stream);
+            tcp_send_data(&stream, b"It's from LoRaForest Server!");
+            data = tcp_recive_data(&stream);
             if data == "Ok" {
                 log_out!("连接成功，目标地址:{}", stream.peer_addr().unwrap());
                 return Ok(stream);
@@ -272,12 +284,14 @@ fn group_data(data: &String, data_write_buffer: &mut Data) {
 
     if data_write_buffer.count == 5 {
         let temp = format!(
-            "{:?},{:?},{:?},{:?},{:?}",
-            data_write_buffer.value[0],
-            data_write_buffer.value[1],
-            data_write_buffer.value[2],
-            data_write_buffer.value[3],
-            data_write_buffer.value[4]
+            "{},{},{:?},{:?},{:?},{:?},{:?}\n",
+            chrono::Local::now().format("%Y-%m-%d"),
+            chrono::Local::now().format("%H:%M:%S"),
+            data_write_buffer.value[0].unwrap(),
+            data_write_buffer.value[1].unwrap(),
+            data_write_buffer.value[2].unwrap(),
+            data_write_buffer.value[3].unwrap(),
+            data_write_buffer.value[4].unwrap()
         );
         write_file(&temp, WriteType::Data);
         data_write_buffer.clear();
