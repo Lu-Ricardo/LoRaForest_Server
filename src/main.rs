@@ -1,3 +1,5 @@
+use regex::Regex;
+use serialport::{DataBits, Parity, StopBits};
 use std::{
     fs::{self, OpenOptions},
     io::{Read, Write},
@@ -7,14 +9,38 @@ use std::{
     time::Duration,
 };
 
-use serialport::{DataBits, Parity, StopBits};
-
 static SERIAL_DATA_BUFFER: Mutex<String> = Mutex::new(String::new());
 static STOP_FLAG: Mutex<bool> = Mutex::new(true);
 
 enum WriteType {
     Log,
     Data,
+}
+
+struct Data {
+    value: [Option<f32>; 5],
+    count: usize,
+}
+
+impl Data {
+    fn new() -> Self {
+        Self {
+            value: [None, None, None, None, None],
+            count: 0,
+        }
+    }
+
+    fn store(&mut self, index: usize, data: f32) {
+        if self.value[index].is_none() {
+            self.count += 1;
+        }
+        self.value[index] = Some(data);
+    }
+
+    fn clear(&mut self) {
+        self.count = 0;
+        self.value = [None, None, None, None, None];
+    }
 }
 
 #[macro_export]
@@ -68,7 +94,10 @@ fn write_file(data: &String, datatype: WriteType) {
         .append(true)
         .open(&data_path)
     {
-        Ok(file) => file,
+        Ok(mut file) => {
+            let _ = file.write(b"Temperature,Rain,Light,Press,Humidity");
+            file
+        }
         Err(e) => {
             log_out!("{:?} 文件创建失败，报错原因: {}", &data_path, e.to_string());
             return;
@@ -155,11 +184,13 @@ fn start_read_serialport(port: String, baud_rate: u32) {
     std::thread::spawn(move || {
         let mut raw_buffer = [0; 64];
         let mut lines = String::new();
+        let mut data = Data::new();
         loop {
             if let Ok(size) = &mut sp.read(&mut raw_buffer) {
                 let complete_data =
                     get_complete_line(&mut raw_buffer[..*size], &mut lines).to_string();
                 write_file(&complete_data, WriteType::Data);
+                group_data(&complete_data, &mut data);
                 (*SERIAL_DATA_BUFFER.lock().unwrap()).clear();
                 (*SERIAL_DATA_BUFFER.lock().unwrap()).push_str(&complete_data);
             }
@@ -203,4 +234,52 @@ fn wait_connect(listener: &TcpListener) -> Result<TcpStream, std::io::Error> {
         std::io::ErrorKind::NotFound,
         "无可用连接",
     ))
+}
+
+fn group_data(data: &String, data_write_buffer: &mut Data) {
+    //正则表达式
+    let temperature_re: Regex = Regex::new(r"Temperature: (\d+?)C;").unwrap();
+    let rain_re: Regex = Regex::new(r"Rain: (\d+?);").unwrap();
+    let light_re: Regex = Regex::new(r"Light: (\d+\.?\d*);").unwrap();
+    let press_re: Regex = Regex::new(r"Press: (\d+\.?\d*) hPa;").unwrap();
+    let humidity_re: Regex = Regex::new(r"Humidity: (\d+?)%;").unwrap();
+
+    if let Some(cap) = temperature_re.captures(&data) {
+        let temp: f32 = (&cap[1]).trim().parse().expect("温度数据解析出错");
+        data_write_buffer.store(0, temp);
+    }
+    if let Some(cap) = rain_re.captures(&data) {
+        let rain_adc: f32 = (&cap[1]).trim().parse().expect("");
+        let rain_ph: f32 = (3940.0 - rain_adc).abs() / 100.0;
+        let rain: f32 = if rain_ph > 1.0 { rain_ph } else { 0.0 };
+        data_write_buffer.store(1, rain);
+    }
+    if let Some(cap) = light_re.captures(&data) {
+        let light_adc: f32 = (&cap[1]).trim().parse().expect("");
+        let v_adc_mv: f32 = light_adc * 3300.0 / 4095.0;
+        let r_lux: f32 = 10000.0 * (v_adc_mv / (3300.0 - v_adc_mv));
+        let lux: f32 = 10.0 * (7500.0 / r_lux).powi(2);
+        data_write_buffer.store(2, lux);
+    }
+    if let Some(cap) = press_re.captures(&data) {
+        let press_adc: f32 = (&cap[1]).trim().parse().expect("");
+        data_write_buffer.store(3, press_adc);
+    }
+    if let Some(cap) = humidity_re.captures(&data) {
+        let temp: f32 = (&cap[1]).trim().parse().expect("");
+        data_write_buffer.store(4, temp);
+    }
+
+    if data_write_buffer.count == 5 {
+        let temp = format!(
+            "{:?},{:?},{:?},{:?},{:?}",
+            data_write_buffer.value[0],
+            data_write_buffer.value[1],
+            data_write_buffer.value[2],
+            data_write_buffer.value[3],
+            data_write_buffer.value[4]
+        );
+        write_file(&temp, WriteType::Data);
+        data_write_buffer.clear();
+    }
 }
