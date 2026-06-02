@@ -46,11 +46,17 @@ impl Data {
 #[macro_export]
 macro_rules! log_out {
     ($($arg:tt)*) => {
-        //为输出打上时间戳
-        println!("[{}] {}",
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-            format!($($arg)*)
-        )
+        {
+            let msg = format!($($arg)*);
+            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+            let formatted_msg = format!("[{}] {}\n", timestamp, msg);
+
+            // 输出到控制台
+            print!("{}", formatted_msg);
+
+            // 写入文件
+            $crate::write_file(&formatted_msg, $crate::WriteType::Log);
+        }
     };
 }
 
