@@ -1,10 +1,11 @@
 use regex::Regex;
-use serialport::{DataBits, Parity, StopBits};
+use serialport::{DataBits, ErrorKind, Parity, StopBits};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
+    io::{self, Read, Write},
+    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     path::Path,
+    process::exit,
     sync::Mutex,
     time::Duration,
 };
@@ -61,13 +62,15 @@ macro_rules! log_out {
 }
 
 fn main() {
+    log_out!("准备启动服务器...");
     let args: Vec<String> = std::env::args().collect();
     let baud_rate: u32 = args[2].trim().parse().expect("波特率参数错误");
+    let listen_port: u16 = args[3].trim().parse().expect("端口号无效");
     start_read_serialport(args[1].to_string(), baud_rate);
     loop {
         //如果连接断开了就重启程序，确保程序一直运行
         if *STOP_FLAG.lock().unwrap() {
-            start_tcp_server();
+            start_tcp_server(listen_port);
             *STOP_FLAG.lock().unwrap() = false;
         }
     }
@@ -103,7 +106,7 @@ fn write_file(data: &String, datatype: WriteType) {
         match File::create(&log_path) {
             Ok(_) => {}
             Err(e) => {
-                log_out!("无法打开Log文件, {}", e.to_string());
+                println!("无法打开Log文件, {}", e.to_string());
             }
         }
     }
@@ -133,8 +136,19 @@ fn write_file(data: &String, datatype: WriteType) {
     }
 }
 
-fn start_tcp_server() {
-    let listener = TcpListener::bind("0.0.0.0:8899").unwrap();
+fn start_tcp_server(listen_port: u16) {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), listen_port);
+    let listener = match TcpListener::bind(addr) {
+        Ok(listener) => listener,
+        Err(e) => {
+            if e.kind() == io::ErrorKind::AddrInUse {
+                log_out!("{}端口已被占用，请尝试其他端口重新启动程序...", listen_port);
+                exit(0);
+            }
+            return;
+        }
+    };
+    log_out!("服务器启动成功, 地址: {}", addr.to_string());
     match wait_connect(&listener) {
         Ok(send_stream) => {
             let receive_stream = send_stream.try_clone().unwrap();
