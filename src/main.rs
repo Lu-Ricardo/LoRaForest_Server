@@ -1,5 +1,5 @@
 use regex::Regex;
-use serialport::{DataBits, ErrorKind, Parity, StopBits};
+use serialport::{DataBits, Parity, StopBits};
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
@@ -282,9 +282,13 @@ fn group_data(data: &String, data_write_buffer: &mut Data) {
     }
     if let Some(cap) = rain_re.captures(&data) {
         let rain_adc: f32 = (&cap[1]).trim().parse().expect("");
-        let rain_ph: f32 = (3940.0 - rain_adc).abs() / 100.0;
-        let rain: f32 = if rain_ph > 1.0 { rain_ph } else { 0.0 };
-        data_write_buffer.store(1, rain);
+        let result = if rain_adc < 4000.0 {
+            let h1 = 224.031 * (-0.001287 * rain_adc).exp() - 0.526624;
+            h1 * 6.0 * 6.0 / 314.1592
+        } else {
+            0.0
+        };
+        data_write_buffer.store(1, result);
     }
     if let Some(cap) = light_re.captures(&data) {
         let light_adc: f32 = (&cap[1]).trim().parse().expect("");
